@@ -25,9 +25,9 @@ type Telegram struct {
 }
 
 type Config struct {
-	Kafka    Kafka    `envPrefix:"TGRP_KAFKA_"`
-	Server   Server   `envPrefix:"TGRP_SERVER_"`
-	Telegram Telegram `envPrefix:"TGRP_TELEGRAM_"`
+    Kafka    Kafka    `envPrefix:"TGSENDER_KAFKA_"`
+    Server   Server   `envPrefix:"TGSENDER_SERVER_"`
+    Telegram Telegram `envPrefix:"TGSENDER_TELEGRAM_"`
 }
 
 func Load() (*Config, error) {
