@@ -1,33 +1,63 @@
 package processor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 
-	"tg-sender/internal/model"
-	"tg-sender/internal/service"
+	"tg-sender/internal/contract"
+	"tg-sender/internal/logger"
 )
 
 type TgMessageSender struct {
-	tgService *service.TgService
+	token      string
+	apiBase    string
+	httpClient *http.Client
+	logger     logger.Logger
 }
 
-func NewTgMessageSender(kafkaTopic string, telegramService *service.TgService) *TgMessageSender {
+type Option struct {
+	Token      string
+	ApiBase    string
+	HttpClient *http.Client
+	Logger     logger.Logger
+}
+
+func NewTgMessageSender(opt Option) *TgMessageSender {
 	return &TgMessageSender{
-		tgService: telegramService,
+		token:      opt.Token,
+		apiBase:    opt.ApiBase,
+		httpClient: opt.HttpClient,
+		logger:     opt.Logger,
 	}
 }
 
 func (t *TgMessageSender) Handle(ctx context.Context, raw []byte) error {
-	var requestMessage model.SendMessageRequest
+	var requestMessage contract.SendMessageRequest
 	if err := json.Unmarshal(raw, &requestMessage); err != nil {
 		return err
 	}
 
-	err := t.tgService.SendMessage(requestMessage)
+	url := fmt.Sprintf("%s/sendMessage", t.apiBase)
+
+	payload, err := json.Marshal(requestMessage)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal request: %w", err)
 	}
+
+	resp, err := t.httpClient.Post(url, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("telegram API responded with status: %s", resp.Status)
+	}
+
+	t.logger.Info("✅ Message sent to chat %d", requestMessage.ChatID)
 
 	return nil
 }

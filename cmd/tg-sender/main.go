@@ -2,49 +2,53 @@ package main
 
 import (
 	"context"
-	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+
 	cfg "tg-sender/internal/config"
-	cfgModel "tg-sender/internal/config/model"
+	"tg-sender/internal/logger"
 	"tg-sender/internal/messaging"
 	"tg-sender/internal/processor"
-	"tg-sender/internal/service"
 )
 
 func main() {
-	log.Println("🚀 Starting tg-sender...")
+	lg, cleanup := logger.NewZapLogger()
+	defer cleanup()
+	lg.Info("🚀 Starting tg-sender...")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	kafkaConf, err := cfg.LoadSection[cfgModel.KafkaConfig]()
+	lg.Info("🚀 Starting tg-sender…")
+
+	conf, err := cfg.Load()
 	if err != nil {
-		log.Fatalf("❌ Failed to load Kafka config: %v", err)
+		lg.Error("❌ Failed to load config: %v", err)
+		os.Exit(1)
 	}
 
-	tgConf, err := cfg.LoadSection[cfgModel.TelegramConfig]()
+	sender := processor.NewTgMessageSender(processor.Option{
+		Token:      conf.Telegram.Token,
+		ApiBase:    "https://api.telegram.org/bot" + conf.Telegram.Token,
+		HttpClient: http.DefaultClient,
+		Logger:     lg,
+	})
+
+	consumer, err := messaging.NewKafkaConsumer(messaging.ConsumerOption{
+		Logger:       lg,
+		Broker:       conf.Kafka.BootstrapServersValue,
+		GroupID:      conf.Kafka.ResponseMessageGroupID, // используем имеющийся group id
+		Topics:       []string{conf.Kafka.TelegramMessageTopicName},
+		Handler:      sender,
+		SaslUsername: conf.Kafka.SaslUsername,
+		SaslPassword: conf.Kafka.SaslPassword,
+		ClientID:     conf.Kafka.ClientID,
+	})
 	if err != nil {
-		log.Fatalf("❌ Failed to load Kafka config: %v", err)
-	}
-
-	if err != nil {
-		log.Fatalf("❌ Failed to create S3 uploader: %v", err)
-	}
-
-	tgService := service.NewTelegramSenderService(tgConf.Token)
-
-	tgMessagePreparer := processor.NewTgMessageSender(kafkaConf.TelegramMessageTopicName, tgService)
-	handler := func(msg []byte) error {
-		return tgMessagePreparer.Handle(ctx, msg)
-	}
-
-	messaging.Init(kafkaConf.BootstrapServersValue)
-
-	consumer, err := messaging.NewConsumer(kafkaConf.BootstrapServersValue, kafkaConf.TelegramMessageGroupId, kafkaConf.TelegramMessageTopicName, handler)
-	if err != nil {
-		log.Fatalf("❌ Failed to create consumer: %v", err)
+		lg.Error("❌ Failed to create consumer: %v", err)
+		os.Exit(1)
 	}
 
 	go func() {
@@ -55,6 +59,7 @@ func main() {
 	}()
 
 	if err := consumer.Start(ctx); err != nil {
-		log.Fatalf("❌ Consumer error: %v", err)
+		lg.Error("❌ Consumer error: %v", err)
+		os.Exit(1)
 	}
 }

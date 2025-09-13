@@ -1,1 +1,0 @@
-# telegram-response-preparer
