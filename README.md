@@ -1,63 +1,38 @@
 # telegram-sender
 
-## Command Guide
+## Что делает
 
-### Run with exported .env (one‑liner)
+1. Подписывается на Kafka-топик `TOPIC_NAME_TG_REQUEST_MESSAGE`, входящий поток подготовленных `SendMessageRequest` (см. `internal/contract`).
+2. Каждый сырое сообщение десериализуется в структуру с `chat_id`, `text` и опциональными параметрами, затем преобразуется в HTTP-запрос к Telegram API.
+3. Отправляет POST на `https://api.telegram.org/bot<TOKEN>/sendMessage` и логирует исходные данные и код ответа.
+4. При ошибках клиента или Telegram API возвращает ненулевой код, чтобы `runConsumerSupervisor` перезапустил consumer.
 
-Exports all variables from `.env` into the current shell and runs the service.
+## Запуск
 
-```
-export $(cat .env | xargs) && go run ./cmd/tg-sender
-```
+1. Экспортируйте нужные переменные (`set -a && source .env && set +a`) или задавайте вручную.
+2. Соберите и запустите локально:
+   ```bash
+   go run ./cmd/tg-sender
+   ```
+3. Или соберите Docker-образ и пробросьте конфигурацию:
+   ```bash
+   docker build -t telegram-sender .
+   docker run --rm -e ... telegram-sender
+   ```
 
-### Run with `source` (safer for complex values)
+## Переменные окружения
 
-Loads `.env` preserving quotes and special characters, then runs the service.
+Все переменные обязательны, кроме SASL-полей, если Kafka не требует аутентификации.
 
-```
-set -a && source .env && set +a && go run ./cmd/tg-sender
-```
+- `KAFKA_BOOTSTRAP_SERVERS_VALUE` — список брокеров (`host:port[,host:port]`).
+- `KAFKA_TOPIC_NAME_TG_REQUEST_MESSAGE` — топик, откуда читаются `SendMessageRequest` для Telegram.
+- `KAFKA_GROUP_ID_TELEGRAM_SENDER` — consumer group для масштабирования обработки ответов.
+- `KAFKA_CLIENT_ID_TELEGRAM_SENDER` — общий client id (продюсер+консьюмер), отображается в метриках Sarama.
+- `KAFKA_SASL_USERNAME` и `KAFKA_SASL_PASSWORD` — используйте для SASL/SCRAM, можно оставить пустыми при открытом кластере.
+- `TELEGRAM_TOKEN` — токен бота в формате `1234:abcd...`, используется для формирования URL `https://api.telegram.org/bot<TOKEN>`.
 
-### Fetch/clean module deps
+## Примечания
 
-Resolves dependencies and prunes unused ones.
-
-```
-go mod tidy
-```
-
-### Verbose build (diagnostics)
-
-Builds the binary with verbose and command tracing. Removes old binary after build to keep the tree clean.
-
-```
-go build -v -x ./cmd/tg-sender && rm -f tg-sender
-```
-
-### Docker build (Buildx)
-
-Builds the image with detailed progress logs and without cache.
-
-```
-docker buildx build --no-cache --progress=plain .
-```
-
-### Create and push tag
-
-Cuts a release tag and pushes it to remote.
-
-```
-git tag v0.0.1
-git push origin v0.0.1
-```
-
-### Manage tags
-
-List all tags, delete a tag locally and remotely, verify deletion.
-
-```
-git tag -l
-git tag -d vX.Y.Z
-git push --delete origin vX.Y.Z
-git ls-remote --tags origin | grep 'refs/tags/vX.Y.Z$'
-```
+- Сам HTTP-запрос формируется в `internal/processor/tg-message-sender.go`, `SendMessageRequest` маршалится через `encoding/json`.
+- При ответе Telegram со статусом ≥300 или когда тело не парсится, ошибка возвращается, и `runConsumerSupervisor` запускает consumer снова (логика в `cmd/tg-sender/main.go`).
+- Сообщения отправляются синхронно, поэтому скорость ограничена задержками Telegram API; обрабатываются по одному.
